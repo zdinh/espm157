@@ -1,0 +1,469 @@
+---
+title: "Top Producers of Marine Finfish Aquaculture"
+author: "Zack Dinh and Erik J Ortega"
+date: "Fall 2018"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE, tidy=TRUE, echo=FALSE, warining=FALSE, error=FALSE, message=FALSE}
+### Web link: https://espm-157.github.io/final-project-aqua-team-erik-and-zack/
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r echo = FALSE, message = FALSE, include = FALSE}
+library(dplyr)
+library(plyr)
+library(tidyverse)
+
+library(scales)
+library(lwgeom)
+library(RColorBrewer)
+
+library(sf)
+library(raster)
+library(leaflet)
+```
+
+![Net pens are used around the world in the farming of finfish.](https://js.undercurrentnews.com/wp-content/uploads/2018/11/shutter-asaldfl.jpg)
+
+###Marine Aquculture, A Global Industry
+Marine aquaculture is the practice of farming marine organisms. As of 2018, more than half the world's seafood supply (finfish, crustaceans, and molluscs) were produced through aquaculture. The industry has grown rapidly, with global production doubling in the last 12 years from 41.91 million tonnes in 2004 to 80.03 million tonnes in 2016. 
+
+Marine aquaculture is viewed by many as a potential solution towards feeding a growing world population. Marine aquaculture reduces the demand for land needed for farming and livestock, and uses no freshwater. Importantly, the [feed conversion ratio (FCR)](http://documents.worldbank.org/curated/en/556181468331788600/pdf/788230BRI0AES00without0the0abstract.pdf) of farmed fish is more efficient then that of terrestrial livestock. 
+
+Net-pen aquaculture is a specific type of marine aquaculture where fish are raised in net pens typically placed near shore. This open-system has been criticized for environmental degradation due to high concentration of fish waste, use of antibiotics, and other chemicals. The spread of pathogens and competition from escaped fish caused by net pen failures have been seen as serious threats to wild fish populations. This initial study is the first step towards identification of net-pens throughout the world.
+
+###Our Goals
+
+- Identify which countries are the greatest producers of marine finfish aquaculture, measured in tonnes
+- Estimate the total amount of area each country could use for marine aquaculture, defined as waters within 22.2 kilometers of a country’s coastline.
+- Generate area of interest (AOI) shapefiles of each country’s coastal waters for future use in downloading high-resolution satellite imagery.
+- Generate a relatively high-resolution land mask of each country, to exclude land from future satellite imagery processing efforts focused on the waters within the AOIs.
+
+
+###Data Source: United Nations Food & Agriculture Organization 
+We began by reviewing data from the United Nations Food & Agriculture Organization (UNFAO). Each year, the UNAFO releases [The State of the World Fisheries and Aquaculture](http://www.fao.org/state-of-fisheries-aquaculture/en/) which includes the [original data](http://www.fao.org/fishery/statistics/global-aquaculture-production/en) available as CSVs. By combining and filtering through these data sets we were able to identify the total production of marine finfish for each country in 2016 (The 2018 report cites data from 2016). Below is a sample of the UNFAO data after our tidying efforts.
+
+```{r echo = FALSE, include = FALSE, message = FALSE}
+#download UNFAO data as zipfile and unzip 
+url <- "http://www.fao.org/fishery/static/Data/Aquaculture_2018.1.2.zip"
+
+temp <- tempfile()
+temp2 <- tempfile()
+
+download.file(url, temp)
+unzip(zipfile = temp, exdir = temp2)
+```
+
+```{r echo = FALSE, message = FALSE, include = FALSE}
+#create dataframes from CSVs
+aquaculture <- read_csv(file.path(temp2, "TS_FI_AQUACULTURE.csv"))
+environment <- read_csv(file.path(temp2, "CL_FI_ENVIRONMENT.csv"))
+country <- read_csv(file.path(temp2, "CL_FI_COUNTRY_GROUPS.csv"))
+units <- read_csv(file.path(temp2, "CL_FI_UNIT.csv"))
+species <- read_csv(file.path(temp2, "CL_FI_SPECIES_GROUPS.csv"))
+
+#select specific columns for certain CSVs
+environment <- environment %>% 
+  dplyr::select(Identifier, Name_En)
+
+country <- country %>% 
+  dplyr::select(UN_Code, ISO3_Code, Name_En)
+
+units <- units %>% 
+  dplyr::select(Code, Name_En)
+
+species <- species %>% 
+  dplyr::select("3Alpha_Code", Major_Group, Name_En)
+```
+
+```{r echo = FALSE, message = FALSE, include = FALSE}
+#join tables together to create dataframe that can be filtered by: year (2016), enviornment (Marine), and species group (PISCES)
+aquaculture_2016 <- aquaculture %>%
+  left_join(environment, by = c("ENVIRONMENT" = "Identifier")) %>%
+  left_join(species, by = c("SPECIES"= "3Alpha_Code")) %>%
+  left_join(country, by = c("COUNTRY" = "UN_Code")) %>%
+  dplyr::rename("ENVIRONMENT_NAME" = "Name_En.x", 
+                "SPECIES_NAME" = "Name_En.y", 
+                "COUNTRY_NAME" = "Name_En", 
+                "TONNES" = "QUANTITY", 
+                "GROUP" = "Major_Group") %>%
+  filter(ENVIRONMENT_NAME == "Marine", 
+         GROUP == "PISCES",
+         YEAR == 2016) %>% 
+  dplyr::select(-ENVIRONMENT, -COUNTRY, -SPECIES, -QUANTITY_UNIT, -QUANTITY_SYMBOL, -VALUE_SYMBOL) %>%
+  dplyr::select(COUNTRY_NAME, ISO3_Code, ENVIRONMENT_NAME, GROUP, SPECIES_NAME, TONNES, VALUE, YEAR) %>%
+  mutate(TONNES = round(TONNES, 1), 
+         VALUE = round(TONNES, 1))
+```
+
+```{r}
+aquaculture_2016
+```
+
+```{r echo = FALSE, include = FALSE, message = FALSE}
+#total marine finfish aquaculture production per country by tonnes
+top <- aquaculture_2016 %>%
+  group_by(COUNTRY_NAME) %>%
+  dplyr::summarise(TONNES = sum(TONNES)) %>%
+  mutate("PERCENTAGE" = TONNES/sum(TONNES)) %>%
+  arrange(desc(PERCENTAGE)) %>%
+  left_join(country, by = c("COUNTRY_NAME" = "Name_En")) %>%
+  dplyr::select(COUNTRY_NAME, ISO3_Code, TONNES, PERCENTAGE)
+  
+top15 <- top[1:15,]
+top10 <- top[1:10,]
+
+bottom65 <- top[11:75,]
+bottom65 <-c("Other","OTH",sum(bottom65$TONNES),sum(bottom65$PERCENTAGE))
+top10 <-rbind(top10,bottom65)
+```
+
+###Top 15 Marine Finfish Aquaculture Production Countries
+
+We identified these 15 countires as the top producers of marine finfish in 2016. China, Norway, and Chilie are the world leaders.
+
+```{r echo = FALSE, message = FALSE, warning=FALSE, fig.width = 10}
+#bar chart of top15 countries by tonnes
+ggplot(top15, aes(x=reorder(COUNTRY_NAME,TONNES), y=as.double(TONNES))) +
+  geom_bar(stat="identity", fill="deepskyblue4") +
+  geom_text(aes(label=comma(round(TONNES, 0))), vjust= .5, hjust = -.1, size=3)+
+  theme(legend.position="none", text = element_text(size=12)) + 
+  scale_y_continuous(limits=c(12452,1480000),oob = rescale_none, labels = comma) + 
+  coord_flip() +
+  labs(x = NULL, y = "Quantity (Tonnes)")
+```
+
+These 15 countries accounted for 97% of global marine finfish production in 2016.
+
+```{r echo = FALSE, message = FALSE, warning=FALSE, fig.width = 10}
+ggplot(top15, aes(x=reorder(COUNTRY_NAME,PERCENTAGE), y=as.double(PERCENTAGE))) +
+  geom_bar(stat="identity", fill="deepskyblue4") +
+  geom_text(aes(label=round(PERCENTAGE, 3)), vjust= .5, hjust = -.1, size=3)+
+  coord_flip() +
+  labs(x = NULL, y = "PERCENTAGE")
+```
+
+```{r echo = FALSE, message = FALSE, warning=FALSE, results = "hide"}
+#shapefile of the world countries sourced from ESRI
+world <- st_read("spatial data/Countries_WGS84/Countries_WGS84.shp")
+
+#list of top 15 countries
+countries <- as.vector(top15[[1]])
+
+#add aquculture data to world shapefile
+aqua_world <- world %>%
+  filter(Name_En %in% countries) %>%
+  left_join(top15, by = c("Name_En" = "COUNTRY_NAME" )) %>%
+  dplyr::select(-CNTRY_NAME, -Identifier, -UN_Code, -ISO2_Code, -ISO3_Code.x, -ISO3_Code.y)
+
+#map of aquculture countries
+# plot(st_geometry(world))
+# plot(st_geometry(aqua_world), col = 'black', border = FALSE, add = TRUE)
+# plot(st_geometry(aqua_world), col = 'black', border = FALSE)
+
+# st_write(aqua_world, "spatial data/aqua_world.shp")
+```
+
+```{r echo = FALSE, message = FALSE, warning=FALSE, results = "hide"}
+#function to create spatial object of a country
+Country = function(country_name) {
+  country <- aqua_world %>% filter(Name_En == country_name)
+  return(country)
+}
+```
+
+```{r echo = FALSE, message = FALSE, warning=FALSE, results = "hide"}
+#function to create buffer around country
+Buffer = function(country) {
+  centroid = st_centroid(country) #generates centroid point
+  lonlat = st_coordinates(centroid) #extracts lon/lat of centroid point
+  utm = (floor((lonlat[1] + 180) / 6) %% 60) + 1 #calculates utm code
+  transform = st_transform(country, crs = if(lonlat[2] > 0) utm + 32600 else utm + 32700) #transform CRS
+  buffer = st_buffer(transform, dist = 22200) #22,200m = 22.2km 
+  outer_buf = st_difference(buffer, transform) #extracts outer buffer only
+  wgs84 = st_transform(outer_buf, crs = 4326) #transform back to wgs84 CRS
+  return(wgs84)
+}
+```
+
+```{r echo = FALSE, message = FALSE, warning=FALSE, results = "hide"}
+#this for loop makes a buffer for each of the top 15 countries
+BufferForLoop = function(range){
+  AOI_list = list()
+  for (i in 1:nrow(aqua_world[range,])){
+    buffers = Buffer(aqua_world[i,])
+    AOI_list[[i]]<- buffers
+    print(i)
+  }
+  AOI_list <- do.call(rbind, AOI_list)
+  return (AOI_list)
+}
+```
+
+```{r echo = FALSE, message = FALSE, warning=FALSE, results = "hide"}
+#generate buffer for each country
+AOI_list <- BufferForLoop(1:14)
+#st_write(AOI_list, "spatial data/AOI_list.shp")
+```
+
+```{r echo = FALSE, message = FALSE, warning=FALSE, results = "hide"}
+#full landmask
+  land <- st_union(world)
+  #plot(st_geometry(land), col = 'black', border = FALSE)
+  #st_write(land, "spatial data/land.shp")
+
+#removal of all land area from  all buffers, this process took a very long time, so it was saved as a shapfile
+  # AOI_list_clip <- st_difference(AOI_list, land)
+  # st_write(AOI_list_clip, "spatial data/AOI_list_clip14.shp")
+
+AOI_list_clip2 <- st_read("spatial data/AOI_list_clip14.shp")
+  AOI_list_clip2$area <- st_area(AOI_list_clip2) #add total surface area  
+```
+
+### Final Map
+This map shows the top 15 countries we identified. Their shading represents their percentage of the world's total marine finfish aquaculture produciton. The world shapefile was sourced from: [ESRI.](https://hub.arcgis.com/datasets/252471276c9941729543be8789e06e12_0?geometry=-163.125%2C-46.149%2C196.875%2C57.646) Along the coastlines of the top 15 countries are polygons approximating the territorial waters of each country (waters within 22.2km of coastline). Although most marine aquculture occurs very close to shore, within bays and inlets, this represents the total area in which marine aquaculture could be found for any given country. In the future these AOIs will be used to download high-resoluiton satelite imagery to locate marine aquculture facilities.
+
+```{r echo = FALSE, message = FALSE, warning=FALSE}
+### Change aqua_world to a spatial object for R to recognize its geometry
+AW_sp <- as_Spatial(aqua_world)
+
+### Change the AOI_list to a spatial object for R to recognize its geometry
+AOI_sp <- as_Spatial(AOI_list_clip2) 
+```
+
+```{r echo = FALSE, fig.width = 10}
+#dynamic map
+cols <- colorRampPalette(c("navyblue","deepskyblue4","mediumturquoise","mintcream"))
+
+pal <- colorNumeric(cols(15), NULL, reverse = TRUE)
+
+labelsTonnes <- sprintf("<strong>%s</strong><br/>%g Tonnes",
+                  aqua_world$Name_En, aqua_world$TONNES) %>%
+  lapply(htmltools::HTML)
+
+labelsArea <- sprintf("<strong>%s</strong><br/>%g m<sup>2</sup>",
+                  AOI_list_clip2$Nm_En, AOI_list_clip2$area) %>%
+  lapply(htmltools::HTML)
+
+map <- leaflet(AW_sp, options=leafletOptions(minZoom=1,maxZoom=8)) %>%
+  ### Three layers of map for the user to determine which of these is the most helpful
+  addTiles(group = "OSM (Default)",
+           options = tileOptions(noWrap = TRUE))%>%
+  addProviderTiles(providers$Esri.NatGeoWorldMap, group = "NatGeo",
+                   options = tileOptions(noWrap = TRUE))%>%
+  addProviderTiles(providers$Esri.WorldTerrain, group = "Terrain",
+                   options = tileOptions(noWrap = TRUE))%>%
+
+  ### To know what scale the user is currently viewing the map in
+  addScaleBar(position = "bottomleft") %>%
+
+  ### Standard Graticule, currently able to toggle on/off, can be set to show lat/long bounds
+  # addGraticule(interval = 10,
+  #              style = list(weight = .25),
+  #              group = "Graticule") %>%
+
+  ### Mini map, able to be toggled, currently set to be minimized
+  addMiniMap(toggleDisplay = TRUE, minimized = TRUE)%>%
+
+  ### Bounds such that the user cannot go out of our area of interest
+  setMaxBounds(lng1 = -180, lat1 = 83.11388, lng2 = 180, lat2 = -90 )%>%
+
+  ### aqua_world - Overlays top 15 data with Tonnes and Percentage Values
+  addPolygons(
+    stroke = FALSE, smoothFactor = .5,
+    fillOpacity = .8, color = ~pal(PERCENTAGE),
+    ### allows user to hover over country and view Country name and Tonnes information
+    highlight = highlightOptions(fillOpacity = .9, bringToFront = TRUE),
+    label = labelsTonnes,
+    labelOptions = labelOptions(style = list("font-weight" = "normal", padding = "3px 8px"),
+                                textsize = "15px", direction = "auto"),
+    group = c("Top 15 by Percent")) %>%
+
+  ## AOI_list_clip2 - Country Buffer placed onto map, settings will be adjusted for aesthetics and practicality
+  addPolygons(
+    data = AOI_sp,
+    stroke = FALSE, smoothFactor = .5,
+    fillOpacity = .8, color = "yellow",#~pal(PERCENTAGE),
+    ### allows user to hover over country and view Country name and Tonnes information
+    highlight = highlightOptions(fillOpacity = .9, bringToFront = TRUE),
+    label = labelsArea,
+    labelOptions = labelOptions(style = list("font-weight" = "normal", padding = "3px 8px"),
+                                textsize = "15px", direction = "auto"),
+    group = c("Area of Interest")) %>%
+
+  ### Color Legend
+  addLegend(
+    title = "Percent", pal = pal,
+    values = ~PERCENTAGE*100,opacity=.75,
+    bins = 5,
+    labFormat = labelFormat(suffix = "%"),
+    group = c("Top 15 Countries")) %>%
+
+  ### User able to control layers of Maps and Data
+  addLayersControl(position = "topleft",
+    baseGroups = c("OSM (Default)", "NatGeo", "Terrain"),
+    overlayGroups = c("Top 15 by Percent", "Buffer Area"),
+    options = layersControlOptions(collapsed = TRUE))
+
+map
+```
+
+###AOI Total Surface Area
+The total surface area for each country’s AOI was estimated using st_area.
+
+```{r echo = FALSE, message = FALSE, warning=FALSE, fig.width = 10}
+#Calculate area of AOI
+
+AOI_area <- as.data.frame(AOI_list_clip2) %>%
+  mutate(km = as.numeric(area/1000000)) %>%
+  dplyr::select(Nm_En, km) %>%
+  dplyr::rename(COUNTRY_NAME = Nm_En)
+
+#bar chart of top 15 countries by tonnes
+ggplot(AOI_area, aes(x=reorder(COUNTRY_NAME,km), y=as.double(km))) +
+  geom_bar(stat="identity", fill="deepskyblue4") +
+  geom_text(aes(label=comma(round(km, 0))), vjust= .5, hjust = -.1, size=3)+
+  theme(legend.position="none", text = element_text(size=12)) + 
+  scale_y_continuous(limits=c(0,1400000),oob = rescale_none, labels=comma) + 
+  coord_flip() +
+  labs(x = NULL, y = "Square Kilometers")
+```
+
+###AOI Generation Process
+AOIs were generated from the world shapefile. Using the SF package, we generated buffers for each country using st_buffer and then excluded land with st_difference. The process is demonstrated here with Greece.
+
+####Greece
+```{r echo = FALSE, message = FALSE, warning=FALSE}
+#greece
+plot(st_geometry(Country('Greece')), col = 'black', border = FALSE) #select country
+```
+
+####AOI Buffer - Greece
+```{r echo = FALSE, message = FALSE, warning=FALSE}
+#greece buffer
+plot(st_geometry(AOI_list[6,]), col = "deepskyblue4", border = FALSE)
+plot(st_geometry(Country('Greece')), col = FALSE, border = FALSE, add = TRUE)
+```
+
+####AOI Buffer, Land Areas Removed - Greece
+```{r echo = FALSE, message = FALSE, warning=FALSE}
+#greece buffer, land area removed
+plot(st_geometry(Country('Greece')), col = FALSE, border = FALSE)
+plot(st_geometry(AOI_list_clip2[6,]), col = "deepskyblue4", border = FALSE,  add = TRUE)
+```
+
+###Generation of High-Resolution Coastlines from Elevation Data
+Closer inspection of the AOIs, reveal that the ESRI shapefile is of low-resolution, not ideal for use as a land mask. This can be clearly noted with the Faroe Islands. Therefore we developed a process to generate higher-resolution coastlines from digital elevation data. We sourced 30 meter elevation rasters from [USGS Earth Explorer](https://earthexplorer.usgs.gov/). Rasters were merged using the Raster package merge function. Using reclassify, land was classified as pixels with an elevation greater than zero, and water with an elevation of less than 0. The reclassified raster was converted to a vector using GDAL and rgdal. 
+
+####Merged Raster - Faroe Islands
+```{r echo = FALSE, message = FALSE, warning=FALSE, results = "hide", fig.width = 10}
+
+#import digital elevation data (DEM) - example faroe islands
+r1 <- raster("spatial data/ASTGTM2_N61W007/ASTGTM2_N61W007_dem.tif")
+r2 <- raster("spatial data/ASTGTM2_N61W008/ASTGTM2_N61W008_dem.tif")
+r3 <- raster("spatial data/ASTGTM2_N62W007/ASTGTM2_N62W007_dem.tif")
+r4 <- raster("spatial data/ASTGTM2_N62W008/ASTGTM2_N62W008_dem.tif")
+  # plot(r1)
+  # plot(r2)
+  # plot(r3)
+  # plot(r4)
+
+#merge DEMs
+#merge(r1, r2, r3, r4, tolerance=0.05, filename="spatial data/combined.tif", overlap=TRUE, ext=NULL, overwrite=TRUE)
+combined <- raster("spatial data/combined.tif")
+  
+plot(combined)
+```
+
+
+####Reclassified Raster - Faroe Islands
+```{r echo = FALSE, message = FALSE, warning=FALSE, results = "hide", fig.width = 10}
+#reclassify DEM, less than 0, greater than 0: all values >= -99999 and <= 0 become 1, all values >= 0 and <= 99999 become 2
+m <- c(-99999, 0, 1,  0, 99999, 2)
+rcl <- matrix(m, ncol=3, byrow=TRUE)
+    
+#combined_r <- reclassify(combined, rcl, filename="spatial data/combined_r.tif", include.lowest=FALSE, right=TRUE, overwrite=TRUE)
+combined_r <- raster("spatial data/combined_r.tif")
+  
+plot(combined_r)
+```
+
+```{r echo = FALSE, message = FALSE, warning=FALSE, results = "hide"}
+#raster to polygon using GDAL
+#requires GDAL to be installed, instructions: https://www.youtube.com/watch?v=yKTeNVvF4gM
+library(rgdal)
+  
+#raster to polygon function
+gdal_polygonizeR <- function(x, outshape=NULL, gdalformat = 'ESRI Shapefile',
+                             pypath=NULL, readpoly=TRUE, quiet=TRUE) {
+  if (isTRUE(readpoly)) require(rgdal)
+  if (is.null(pypath)) {
+    pypath <- Sys.which('gdal_polygonize.py')
+  }
+  if (!file.exists(pypath)) stop("Can't find gdal_polygonize.py on your system.")
+  owd <- getwd()
+  on.exit(setwd(owd))
+  setwd(dirname(pypath))
+  if (!is.null(outshape)) {
+    outshape <- sub('\\.shp$', '', outshape)
+    f.exists <- file.exists(paste(outshape, c('shp', 'shx', 'dbf'), sep='.'))
+    if (any(f.exists))
+      stop(sprintf('File already exists: %s',
+                   toString(paste(outshape, c('shp', 'shx', 'dbf'),
+                                  sep='.')[f.exists])), call.=FALSE)
+  } else outshape <- tempfile()
+  if (is(x, 'Raster')) {
+    require(raster)
+    writeRaster(x, {f <- tempfile(fileext='.tif')})
+    rastpath <- normalizePath(f)
+  } else if (is.character(x)) {
+    rastpath <- normalizePath(x)
+  } else stop('x must be a file path (character string), or a Raster object.')
+  system2('python', args=(sprintf('"%1$s" "%2$s" -f "%3$s" "%4$s.shp"',
+                                  pypath, rastpath, gdalformat, outshape)))
+  if (isTRUE(readpoly)) {
+    shp <- readOGR(dirname(outshape), layer = basename(outshape), verbose=!quiet)
+    return(shp)
+  }
+  return(NULL)
+}
+```
+
+```{r echo = FALSE, message = FALSE, warning=FALSE, results = "hide"}
+#convert raster to polygon
+#faroe <- gdal_polygonizeR(combined_r)
+
+#export shapefile
+#writeOGR(faroe, "spatial data/faroe.shp", layer = 'poly', driver = "ESRI Shapefile")
+
+#import shapefile
+faroe <- st_read("spatial data/faroe.shp")
+#plot(st_geometry(faroe))
+```
+
+###Next Steps
+In the future, the AOIs developed will be used to download elevation data for more countries of interest via API. A functionalized version of the coastline generation process will then be used to produce land masks. 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
