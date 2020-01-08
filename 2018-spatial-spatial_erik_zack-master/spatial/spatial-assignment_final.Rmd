@@ -1,0 +1,216 @@
+---
+title: "Spatial Assignment - Habitat Suitability Analysis for the Pacific Spiny Lumpsucker"
+author: "Erik J Ortega & Zack Dinh"
+output: html_document
+always_allow_html: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(messages = FALSE, warnings = FALSE, cache = TRUE)
+```
+
+We will map potential areas of marine aquaculture for the super cute Pacific spiny lumpsucker (*Eumicrotremus orbis*)
+
+![They have adhesive pelvic disks! How cute!](./images/lumpsucker.png)
+
+To do this we are going to need the following spatial data:  
+
+**1. Sea Surface Temperature** (raster data)  
+**2. Net Primary Productivity** (raster data)  
+**3. Marine Protected Areas**  (vector data)  
+
+```{r libraries, include= FALSE}
+#install.packages(c("mapview", "raster", "sf"))
+library(mapview)      #interactive maps, raster + vector layers
+library(raster)       #Main raster library
+library(tidyverse)    #our old friend
+library(sf)           #to work with simple features data
+#library(rgdal)
+```  
+
+Key information for optimal growth:  
+
+- Sea surface temperatures between **12 and 18 degrees Celsius**  
+- Net Primary Productivity between **2.6 and 3 mgC/m2/day**
+
+```{r}
+#load west coast marine protected areas shapefile 
+mpas <- st_read("shapefiles/mpas_westcoast.shp", quiet = TRUE)
+
+#load sea surface temperature
+rasterstack <-stack(list.files("rasters/", pattern = "average", full.names = TRUE))
+rasterstack <- stack(files)
+
+#load net primary productivity
+npp <- raster("rasters/annual_npp.tif")
+```
+
+### Map of West Coast Marine Protected Areas
+
+```{r}
+#plot west coast marine protected areas shapefile
+plot(mpas["State"], main = "West Coast MPAs by State", pal = sf.colors(10, categorical = TRUE), border = 'white', 
+     axes = FALSE, key.pos = 4, key.width = lcm(10), graticule = TRUE)
+
+#ggplot method
+#mpas %>% ggplot() + geom_sf(aes(col = State))
+```
+### MPAs
+The National Marine Fisheries Service contorls the largest amount of marine habitat (387,058.3 square kilometers). The table below, in descening order states total area for each entity.
+
+```{r}
+mpas %>%
+    select(State, Area_KM_To) %>%
+    group_by(State) %>%
+    summarise(TotalArea = sum(Area_KM_To)) %>%
+    arrange(desc(TotalArea)) 
+```
+
+
+## Sea Surface Temperature
+
+```{r sst}
+plot(rasterstack)
+```
+
+
+### Task 2: Visualize & Explore
+
+```{r}
+summary(rasterstack)
+```
+#### Question: What year had the highest annual sea surface temperature recorded?
+
+The highest annual sea surface temperature was in 2011 with a max of 307.2733 K.
+
+
+```{r}
+converter <- function(rasterdata) {
+  calc(rasterdata, fun = mean) - 273.15
+}
+
+combined_sst <- converter(rasterstack)
+
+plot(combined_sst, main = "Combined Sea Surface Temperature (2008-2012)")
+```
+
+
+## Net Primary Production
+
+```{r}
+npp <- raster("rasters/annual_npp.tif")
+plot(npp, main = "Net Primary Produciton")
+```
+
+### Reproject
+
+```{r}
+crs(combined_sst)
+```
+
+```{r}
+crs(npp)
+```
+```{r}
+st_crs(mpas)
+```
+
+```{r}
+sst_prj <- projectRaster(combined_sst, crs = crs(npp), asText = TRUE)
+
+identicalCRS(sst_prj, npp)
+```
+
+```{r}
+summary(values(sst_prj))
+
+all.equal(sst_prj, npp)
+
+Stack_SST_NPP <- stack(sst_prj, npp)
+plot(Stack_SST_NPP)
+```
+
+#### Question: Looking at them side by side, do you have intuition about where lumpsuckers are likely to survive? 
+Remember: Lumpsucker fish grow best in waters that are 
+**between 12 and 18 degrees Celsius.** and with an NPP between **2.6 and 3 mgC/m2/day**
+
+## Exercise 4:  Analysis   
+
+### Sample Points & Extract values from Rasters
+
+```{r}
+mpas_sample <- mpas %>%
+  st_sample(1000) %>%
+  st_sf() %>%
+  st_join(mpas)
+
+#mpas_sample
+#plot(mpas_sample)
+```
+
+#### R Question: Why does your new dataframe of points likely have fewer than 1000 points? 
+
+The new dataframe has less than a 1000 points because sample points intersecting more than one polygon are utilized more than once, there for resulting in few total points.
+
+### Task 2: Extract Raster Values
+Use your sampled points to extract information from the rasters 
+on sea surface temperature and net primary productivity, 
+try using the `raster::extract` function. Remember `mutate` plays nicely
+with `sf` objects. 
+
+```{r}
+extracted_temp_npp <- Stack_SST_NPP %>%
+  raster::extract(mpas_sample) %>%
+  as.data.frame()
+
+sample_temp_npp <- mpas_sample %>%
+  mutate(temp = extracted_temp_npp$layer, annual_npp = extracted_temp_npp$annual_npp)%>%
+  select(geometry, temp, annual_npp)
+
+sample_temp_npp
+```
+
+### Task 3: Analysis Questions
+For the following questions, remember that Lumpsucker fish grow best in waters that are 
+**between 12 and 18 degrees Celsius.** and with an NPP between **2.6 and 3 mgC/m2/day**
+
+#### Question 1: At what percentage of your sampled points would lumpsucker fish be found?
+```{r}
+623/974
+
+```
+Lumpsucker fish would be found at around 64% of our sampled points, although this percentage could change since R doesn't always produce the same amount of sample points.
+
+```{r}
+suitable <- sample_temp_npp %>%
+  filter(temp >=12 & temp <= 18)%>%
+  filter(annual_npp >=2.6 & annual_npp <= 3)
+
+unsuitable <- sample_temp_npp %>%
+  filter(temp < 12 & temp > 18) %>% 
+  filter(annual_npp < 2.6 & annual_npp > 3) 
+
+unsuitable
+```
+
+#### Question 2: In your set of sampled points, what is the minimum latitude where lumpsucker fish are likely to be found?
+```{r}
+st_bbox(suitable)
+lumpbox <- st_make_grid(suitable, n = 1)
+lumpbox
+
+lumpSuckerData2 <- st_transform(suitable, crs = "+proj=longlat")
+lumpSuckerData2
+```
+The minuimum latitude is 31.06 degrees North.
+
+#### Question 3: Plot only those points where lumpsucker fish are found. 
+Green areas are suitable for the lump sucker while red areas are not based on SST and NPP thresholds.
+```{r}
+
+plot(Stack_SST_NPP[[1]],  main = "Suitabile Habitat for the Pacific Spiny Lumpsucker on the West Coast")
+plot(lumpbox, add = TRUE)
+plot(suitable, col = "green", add = TRUE)
+plot(unsuitable, col = "red", add = TRUE)
+
+```
